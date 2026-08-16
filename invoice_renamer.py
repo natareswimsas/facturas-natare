@@ -76,6 +76,7 @@ def clean_vendor_name(value: str) -> str:
     value = value.replace(".", "")
     value = value.replace(",", "")
     value = re.sub(r"\s+", " ", value)
+    value = value.strip(" -")
 
     return sanitize_filename(value)
 
@@ -308,6 +309,23 @@ def fallback_vendor_name(raw_text: str) -> str:
         "nro",
         "no.",
         "n°",
+        "proveedor tecnol",
+        "software",
+        "solucion tecnol",
+        "solución tecnol",
+        "operador tecnol",
+        "operador de facturaci",
+    ]
+
+    blocklist_names = [
+        "alegra",
+        "loggro",
+        "siigo",
+        "worldoffice",
+        "world office",
+        "factus",
+        "helisa",
+        "a2 softway",
     ]
 
     # 1) primeras líneas
@@ -318,6 +336,9 @@ def fallback_vendor_name(raw_text: str) -> str:
         if any(word in low for word in skip_words):
             continue
 
+        if any(word in low for word in blocklist_names):
+            continue
+
         if re.search(
             r"(S\.?A\.?S|SAS|S\.?A\.?|SA|LTDA|LTD|COLOMBIA)",
             line,
@@ -325,7 +346,7 @@ def fallback_vendor_name(raw_text: str) -> str:
         ):
             return clean_vendor_name(line)
 
-    # 2) antes de NIT
+    # 2) antes de NIT (línea por línea, para no cruzar renglones distintos)
     patterns = [
         r"([A-ZÁÉÍÓÚÑ0-9 &\.\-]+(?:S\.?A\.?S|SAS|S\.?A\.?|SA|LTDA|LTD))\s+NIT",
         r"([A-ZÁÉÍÓÚÑ0-9 &\.\-]+)\s+NIT[:\s\.]+[0-9\.\-]+",
@@ -333,16 +354,29 @@ def fallback_vendor_name(raw_text: str) -> str:
         r"Emisor[:\s\-]+([A-ZÁÉÍÓÚÑ0-9 &\.\-]+)",
     ]
 
-    for pattern in patterns:
+    for line in lines[:40]:
 
-        match = re.search(pattern, text, re.IGNORECASE)
+        low = line.lower()
 
-        if match:
+        if "natare" in low:
+            continue
+
+        if any(word in low for word in skip_words + blocklist_names):
+            continue
+
+        for pattern in patterns:
+
+            match = re.search(pattern, line, re.IGNORECASE)
+
+            if not match:
+                continue
 
             vendor = match.group(1).strip()
 
-            if "NATARE" not in vendor.upper():
-                return clean_vendor_name(vendor)
+            if len(vendor) < 4:
+                continue
+
+            return clean_vendor_name(vendor)
 
     # 3) fallback primeras líneas
     for line in lines[:15]:
@@ -416,6 +450,72 @@ VENDOR_RULES: list[VendorRule] = [
             (r"factura", "FACT")
         ],
     ),
+
+    VendorRule(
+        name="LA LOCURA DEL HOGAR SAS",
+        detect=lambda t: "la locura del hogar" in t.lower(),
+        number_patterns=[
+            (r"(?P<num>FEL\d{4,})", "num"),
+        ],
+        doc_type_patterns=[],
+    ),
+
+    VendorRule(
+        name="RIOTO COLOMBIA S.A.S",
+        detect=lambda t: "rioto colombia" in t.lower(),
+        number_patterns=[
+            (r"(?P<num>FEVR\d+)", "num"),
+        ],
+        doc_type_patterns=[],
+    ),
+
+    VendorRule(
+        name="MANUFACTURAS ELIOT",
+        detect=lambda t:
+            "eliot" in t.lower()
+            or "tekstelas" in t.lower()
+            or "8600004526" in re.sub(r"[.,\-\s]", "", t),
+        number_patterns=[
+            (r"FACTURA\s+ELECTR[ÓO]NICA\s+DE\s+VENTA\s*(?P<num>\d{6,})", "num"),
+            (r"NOTA\s+CREDITO\s+ELECTR[ÓO]NICA\s*(?P<num>\d+)", "num"),
+        ],
+        doc_type_patterns=[
+            (r"nota\s+cr[eé]dito", "NC"),
+            (r"factura", "FACT"),
+        ],
+    ),
+
+    VendorRule(
+        name="FRISBY SAS",
+        detect=lambda t: "frisby" in t.lower(),
+        number_patterns=[
+            (r"venta:\s*(?P<num>[A-Z]{1,3}\d+)", "num"),
+        ],
+        doc_type_patterns=[],
+    ),
+
+    VendorRule(
+        name="EL PASO TEX-MEX CITY PLAZA",
+        detect=lambda t: "tex-mex" in t.lower() or "tex mex" in t.lower(),
+        number_patterns=[],
+        doc_type_patterns=[],
+    ),
+
+    VendorRule(
+        name="SUSHI MARKET",
+        detect=lambda t: "sushimarket" in t.lower() or "sushi market" in t.lower(),
+        number_patterns=[
+            (r"POS:\s*(?P<num>CT\s?\d+)", "num"),
+        ],
+        doc_type_patterns=[],
+    ),
+
+    VendorRule(
+        name="PRODUVARIOS",
+        detect=lambda t: "produvarios" in t.lower(),
+        number_patterns=[],
+        doc_type_patterns=[],
+    ),
 ]
 
 
@@ -471,7 +571,7 @@ def parse_invoice(pdf_path: Path) -> InvoiceInfo:
     invoice_date = extract_invoice_date(text, pdf_path)
 
     renamed_name = sanitize_filename(
-        f"{invoice_date} - {vendor} - {doc_type} - {number}.pdf"
+        f"{vendor} - {doc_type} - {number} - {invoice_date}.pdf"
     )
 
     return InvoiceInfo(
