@@ -6,6 +6,7 @@ import io
 import zipfile
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from invoice_renamer import parse_invoice
@@ -43,9 +44,17 @@ if not check_password():
 # =========================================================
 
 st.title("🧾 Renombrador de facturas")
-st.write("Subí tus PDFs de facturas, revisá o editá el nombre sugerido, y descargá.")
+st.write("Subí tus PDFs de facturas, editá el nombre en la tabla si hace falta, y descargá.")
 
-files = st.file_uploader("PDFs de facturas", type="pdf", accept_multiple_files=True)
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = 0
+
+files = st.file_uploader(
+    "PDFs de facturas",
+    type="pdf",
+    accept_multiple_files=True,
+    key=f"uploader_{st.session_state['uploader_key']}",
+)
 
 if files and st.button("Procesar facturas", type="primary"):
 
@@ -53,7 +62,7 @@ if files and st.button("Procesar facturas", type="primary"):
 
     with st.spinner(f"Procesando {len(files)} PDF(s)..."):
 
-        for uploaded in files:
+        for i, uploaded in enumerate(files):
 
             tmp_path = Path(f"/tmp/{uploaded.name}")
             tmp_path.write_bytes(uploaded.getvalue())
@@ -61,6 +70,7 @@ if files and st.button("Procesar facturas", type="primary"):
             info = parse_invoice(tmp_path)
 
             processed.append({
+                "id": i,
                 "original_name": info.original_name,
                 "suggested_name": info.renamed_name,
                 "vendor": info.vendor,
@@ -80,29 +90,96 @@ processed = st.session_state.get("processed")
 
 if processed:
 
-    st.success(f"{len(processed)} factura(s) procesadas. Revisá el nombre antes de descargar.")
+    bytes_by_id = {item["id"]: item["bytes"] for item in processed}
 
-    final_names: list[str] = []
+    confidence_icon = {"alta": "🟢", "media": "🟡", "baja": "🔴"}
 
-    for i, item in enumerate(processed):
+    df = pd.DataFrame([
+        {
+            "id": item["id"],
+            "Original": item["original_name"],
+            "Nombre archivo": item["suggested_name"],
+            "Proveedor": item["vendor"],
+            "Tipo": item["doc_type"],
+            "Número": item["number"],
+            "Fecha": item["invoice_date"],
+            "Confianza": confidence_icon.get(item["confidence"], "") + " " + item["confidence"],
+        }
+        for item in processed
+    ])
 
-        confidence_icon = {"alta": "🟢", "media": "🟡", "baja": "🔴"}.get(item["confidence"], "")
+    st.success(f"{len(processed)} factura(s) procesadas. Editá el nombre si hace falta, o borrá una fila (seleccionala y presioná la tecla Delete) para sacarla del lote.")
 
-        with st.expander(f"{confidence_icon} {item['original_name']} → {item['suggested_name']}"):
+    edited_df = st.data_editor(
+        df,
+        column_order=["Original", "Nombre archivo", "Proveedor", "Tipo", "Número", "Fecha", "Confianza"],
+        column_config={
+            "Original": st.column_config.TextColumn(disabled=True),
+            "Nombre archivo": st.column_config.TextColumn(required=True),
+            "Proveedor": st.column_config.TextColumn(disabled=True),
+            "Tipo": st.column_config.TextColumn(disabled=True),
+            "Número": st.column_config.TextColumn(disabled=True),
+            "Fecha": st.column_config.TextColumn(disabled=True),
+            "Confianza": st.column_config.TextColumn(disabled=True),
+        },
+        num_rows="dynamic",
+        width="stretch",
+        hide_index=True,
+        key="editor",
+    )
 
-            st.caption(
-                f"Proveedor: {item['vendor']} · Tipo: {item['doc_type']} · "
-                f"Número: {item['number']} · Fecha: {item['invoice_date']} · "
-                f"Confianza: {item['confidence']}"
-            )
+    col_a, col_b = st.columns(2)
 
-            show_key = f"show_pdf_{i}"
+    with col_a:
+        if st.button("🗑️ Limpiar todo y empezar de nuevo"):
+            st.session_state.pop("processed", None)
+            st.session_state["uploader_key"] += 1
+            st.rerun()
 
-            if st.button("👁️ Ver PDF", key=f"toggle_{i}"):
+    # Filas sobrevivientes (no borradas), en el orden editado
+    rows = edited_df[edited_df["Nombre archivo"].notna()].to_dict("records")
+
+    st.divider()
+    st.subheader("Vista previa individual")
+
+    final_rows = []
+
+    for row in rows:
+
+        item_id = row["id"]
+        item_bytes = bytes_by_id.get(item_id)
+
+        if item_bytes is None:
+            continue
+
+        name = str(row["Nombre archivo"]).strip()
+
+        if not name:
+            continue
+
+        if not name.lower().endswith(".pdf"):
+            name += ".pdf"
+
+        final_rows.append({
+            "original_name": row["Original"],
+            "name": name,
+            "vendor": row["Proveedor"],
+            "doc_type": row["Tipo"],
+            "number": row["Número"],
+            "invoice_date": row["Fecha"],
+            "confidence": row["Confianza"],
+            "bytes": item_bytes,
+        })
+
+        with st.expander(f"{row['Confianza']} {row['Original']} → {name}"):
+
+            show_key = f"show_pdf_{item_id}"
+
+            if st.button("👁️ Ver PDF", key=f"toggle_{item_id}"):
                 st.session_state[show_key] = not st.session_state.get(show_key, False)
 
             if st.session_state.get(show_key):
-                b64 = base64.b64encode(item["bytes"]).decode("utf-8")
+                b64 = base64.b64encode(item_bytes).decode("utf-8")
                 st.markdown(
                     f'<embed src="data:application/pdf;base64,{b64}" '
                     f'width="100%" height="500" type="application/pdf" />',
@@ -113,43 +190,36 @@ if processed:
                     "usá el botón de abajo para descargar y abrirla."
                 )
 
-            edited_name = st.text_input(
-                "Nombre del archivo",
-                value=item["suggested_name"],
-                key=f"name_{i}",
-            )
-
-            if not edited_name.lower().endswith(".pdf"):
-                edited_name += ".pdf"
-
-            final_names.append(edited_name)
-
             st.download_button(
                 "⬇️ Descargar este PDF",
-                data=item["bytes"],
-                file_name=edited_name,
+                data=item_bytes,
+                file_name=name,
                 mime="application/pdf",
-                key=f"download_{i}",
+                key=f"download_{item_id}",
             )
+
+    if not final_rows:
+        st.warning("No quedan facturas en el lote.")
+        st.stop()
 
     # Resolver duplicados de nombre para el ZIP
     seen: dict[str, int] = {}
-    resolved_names: list[str] = []
+    had_duplicates = False
 
-    for name in final_names:
+    for row in final_rows:
+
+        name = row["name"]
 
         if name not in seen:
             seen[name] = 1
-            resolved_names.append(name)
         else:
             seen[name] += 1
             stem, suffix = Path(name).stem, Path(name).suffix
-            resolved_names.append(f"{stem} ({seen[name]}){suffix}")
+            row["name"] = f"{stem} ({seen[name]}){suffix}"
+            had_duplicates = True
 
-    if resolved_names != final_names:
+    if had_duplicates:
         st.warning("Había nombres repetidos — se numeraron automáticamente en el ZIP.")
-
-    st.divider()
 
     # CSV
     csv_buffer = io.StringIO()
@@ -158,19 +228,21 @@ if processed:
         "archivo_original", "archivo_renombrado", "proveedor",
         "tipo_documento", "numero", "fecha_factura", "confianza",
     ])
-    for item, name in zip(processed, resolved_names):
+    for row in final_rows:
         writer.writerow([
-            item["original_name"], name, item["vendor"],
-            item["doc_type"], item["number"], item["invoice_date"], item["confidence"],
+            row["original_name"], row["name"], row["vendor"],
+            row["doc_type"], row["number"], row["invoice_date"], row["confidence"],
         ])
 
     # ZIP
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for item, name in zip(processed, resolved_names):
-            zf.writestr(name, item["bytes"])
+        for row in final_rows:
+            zf.writestr(row["name"], row["bytes"])
         zf.writestr("invoice_index.csv", csv_buffer.getvalue().encode("utf-8-sig"))
     zip_buffer.seek(0)
+
+    st.divider()
 
     st.download_button(
         "⬇️ Descargar ZIP (todas las facturas + índice)",
