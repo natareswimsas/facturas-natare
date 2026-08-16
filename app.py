@@ -104,9 +104,13 @@ if processed:
             if st.session_state.get(show_key):
                 b64 = base64.b64encode(item["bytes"]).decode("utf-8")
                 st.markdown(
-                    f'<iframe src="data:application/pdf;base64,{b64}" '
-                    f'width="100%" height="500" type="application/pdf"></iframe>',
+                    f'<embed src="data:application/pdf;base64,{b64}" '
+                    f'width="100%" height="500" type="application/pdf" />',
                     unsafe_allow_html=True,
+                )
+                st.caption(
+                    "Si no se ve la vista previa, tu navegador la está bloqueando — "
+                    "usá el botón de abajo para descargar y abrirla."
                 )
 
             edited_name = st.text_input(
