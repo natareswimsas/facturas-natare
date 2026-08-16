@@ -46,6 +46,12 @@ if not check_password():
 st.title("🧾 Renombrador de facturas")
 st.write("Subí tus PDFs de facturas, editá el nombre en la tabla si hace falta, y descargá.")
 
+own_company = st.text_input(
+    "Tu empresa (la compradora)",
+    value=st.secrets.get("OWN_COMPANY", "NATARE SWIM SAS"),
+    help="Así la distinguimos del proveedor dentro de la factura.",
+)
+
 if "uploader_key" not in st.session_state:
     st.session_state["uploader_key"] = 0
 
@@ -67,7 +73,7 @@ if files and st.button("Procesar facturas", type="primary"):
             tmp_path = Path(f"/tmp/{uploaded.name}")
             tmp_path.write_bytes(uploaded.getvalue())
 
-            info = parse_invoice(tmp_path)
+            info = parse_invoice(tmp_path, own_company or "NATARE SWIM SAS")
 
             processed.append({
                 "id": i,

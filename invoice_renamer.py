@@ -49,6 +49,21 @@ def sanitize_filename(value: str) -> str:
     return re.sub(r'[<>:"\\|?*]', "", value)
 
 
+def own_company_keyword(own_company: str) -> str:
+    """
+    De 'NATARE SWIM SAS' saca 'natare' — la palabra distintiva que
+    permite reconocer al comprador dentro del PDF y no confundirlo
+    con el proveedor.
+    """
+
+    name = own_company.upper().strip()
+    name = re.sub(r"\b(S\.?A\.?S\.?|LTDA\.?|LTD\.?|S\.?A\.?)$", "", name).strip()
+
+    words = name.split()
+
+    return words[0].lower() if words else ""
+
+
 def clean_number(value: str) -> str:
     return (
         value.strip()
@@ -274,10 +289,12 @@ def fallback_invoice_number(text: str) -> str:
 # PROVEEDOR AUTOMATICO
 # =========================================================
 
-def fallback_vendor_name(raw_text: str) -> str:
+def fallback_vendor_name(raw_text: str, own_company: str = "NATARE SWIM SAS") -> str:
     """
     Detecta proveedor automáticamente aunque sea nuevo.
     """
+
+    own_keyword = own_company_keyword(own_company)
 
     lines = [
         line.strip()
@@ -317,6 +334,9 @@ def fallback_vendor_name(raw_text: str) -> str:
         "operador de facturaci",
     ]
 
+    if own_keyword:
+        skip_words.append(own_keyword)
+
     blocklist_names = [
         "alegra",
         "loggro",
@@ -328,8 +348,23 @@ def fallback_vendor_name(raw_text: str) -> str:
         "a2 softway",
     ]
 
+    # Cuando el nombre de la empresa queda partido en dos líneas del PDF
+    # (ej. "SURTIDORA DE HERRAJES" / "SAS"), se une con la línea anterior.
+    suffix_only = re.compile(r"^(S\.?A\.?S\.?|SA|LTDA\.?|LTD\.?)$", re.IGNORECASE)
+
+    merged_lines: list[str] = []
+
+    for line in lines:
+
+        if merged_lines and suffix_only.match(line):
+            merged_lines[-1] = f"{merged_lines[-1]} {line}"
+        else:
+            merged_lines.append(line)
+
+    lines = merged_lines
+
     # 1) primeras líneas
-    for line in lines[:12]:
+    for line in lines[:20]:
 
         low = line.lower()
 
@@ -340,7 +375,7 @@ def fallback_vendor_name(raw_text: str) -> str:
             continue
 
         if re.search(
-            r"(S\.?A\.?S|SAS|S\.?A\.?|SA|LTDA|LTD|COLOMBIA)",
+            r"\b(?:S\.?A\.?S|SAS|S\.?A\.?|SA|LTDA|LTD|COLOMBIA)\b",
             line,
             re.IGNORECASE
         ):
@@ -350,7 +385,7 @@ def fallback_vendor_name(raw_text: str) -> str:
     patterns = [
         r"([A-ZÁÉÍÓÚÑ0-9 &\.\-]+(?:S\.?A\.?S|SAS|S\.?A\.?|SA|LTDA|LTD))\s+NIT",
         r"([A-ZÁÉÍÓÚÑ0-9 &\.\-]+)\s+NIT[:\s\.]+[0-9\.\-]+",
-        r"Raz[oó]n\s*social/Nombre[:\s]+([A-ZÁÉÍÓÚÑ0-9 &\.\-]+)",
+        r"Raz[oó]n\s*social(?:/Nombre)?[:\s]+([A-ZÁÉÍÓÚÑ0-9 &\.\-]+)",
         r"Emisor[:\s\-]+([A-ZÁÉÍÓÚÑ0-9 &\.\-]+)",
     ]
 
@@ -358,7 +393,7 @@ def fallback_vendor_name(raw_text: str) -> str:
 
         low = line.lower()
 
-        if "natare" in low:
+        if own_keyword and own_keyword in low:
             continue
 
         if any(word in low for word in skip_words + blocklist_names):
@@ -386,7 +421,7 @@ def fallback_vendor_name(raw_text: str) -> str:
         if any(word in low for word in skip_words):
             continue
 
-        if "natare" in low:
+        if own_keyword and own_keyword in low:
             continue
 
         if len(line) >= 5:
@@ -516,6 +551,42 @@ VENDOR_RULES: list[VendorRule] = [
         number_patterns=[],
         doc_type_patterns=[],
     ),
+
+    VendorRule(
+        name="COMPAÑIA DE ALIMENTOS COLOMBIANOS CALCO S.A.",
+        detect=lambda t: "calco" in t.lower(),
+        number_patterns=[
+            (r"(?P<num>341E\s*-?\s*\d+)", "num"),
+        ],
+        doc_type_patterns=[],
+    ),
+
+    VendorRule(
+        name="SURTIDORA DE HERRAJES SAS",
+        detect=lambda t: "surtidora de herrajes" in t.lower(),
+        number_patterns=[
+            (r"No\.\s*(?P<num>FESH\s?\d+)", "num"),
+        ],
+        doc_type_patterns=[],
+    ),
+
+    VendorRule(
+        name="ALMACENES PLASTITELAS S.A.S.",
+        detect=lambda t: "plastitelas" in t.lower(),
+        number_patterns=[
+            (r"(?P<num>FEP\d+)", "num"),
+        ],
+        doc_type_patterns=[],
+    ),
+
+    VendorRule(
+        name="MAR ANTIGUO SAS",
+        detect=lambda t: "mar antiguo" in t.lower(),
+        number_patterns=[
+            (r"(?P<num>MAE-?\d{4,})", "num"),
+        ],
+        doc_type_patterns=[],
+    ),
 ]
 
 
@@ -523,7 +594,7 @@ VENDOR_RULES: list[VendorRule] = [
 # PARSE FACTURA
 # =========================================================
 
-def parse_invoice(pdf_path: Path) -> InvoiceInfo:
+def parse_invoice(pdf_path: Path, own_company: str = "NATARE SWIM SAS") -> InvoiceInfo:
 
     raw_text = extract_text_from_pdf(pdf_path)
     text = normalize_spaces(raw_text)
@@ -538,7 +609,7 @@ def parse_invoice(pdf_path: Path) -> InvoiceInfo:
 
     if selected_rule is None:
 
-        vendor = fallback_vendor_name(raw_text)
+        vendor = fallback_vendor_name(raw_text, own_company)
 
         doc_type = detect_doc_type(text)
 
@@ -591,7 +662,8 @@ def parse_invoice(pdf_path: Path) -> InvoiceInfo:
 
 def process_folder(
     input_dir: Path,
-    output_dir: Path
+    output_dir: Path,
+    own_company: str = "NATARE SWIM SAS"
 ) -> None:
 
     input_dir.mkdir(parents=True, exist_ok=True)
@@ -612,7 +684,7 @@ def process_folder(
 
     for pdf in pdfs:
 
-        info = parse_invoice(pdf)
+        info = parse_invoice(pdf, own_company)
 
         destination = renamed_dir / info.renamed_name
 
@@ -706,11 +778,19 @@ def main() -> None:
         help="Carpeta salida"
     )
 
+    parser.add_argument(
+        "--empresa",
+        type=str,
+        default="NATARE SWIM SAS",
+        help="Nombre de tu empresa (la compradora), para no confundirla con el proveedor"
+    )
+
     args = parser.parse_args()
 
     process_folder(
         args.input_dir,
-        args.output
+        args.output,
+        args.empresa
     )
 
 
